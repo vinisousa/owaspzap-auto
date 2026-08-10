@@ -1,0 +1,87 @@
+env:
+  contexts:
+    - name: "AuthContext"
+      urls:
+        - "${TARGET_URL}"
+      includePaths:
+        - "${TARGET_URL}.*"
+      excludePaths:
+        - "${TARGET_URL}/logout.*"
+      authentication:
+        method: "form"
+        parameters:
+          loginPageUrl: "${LOGIN_URL}"
+          loginRequestUrl: "${LOGIN_REQUEST_URL}"
+          loginRequestBody: "${LOGIN_USERNAME_FIELD}={%username%}&${LOGIN_PASSWORD_FIELD}={%password%}"
+        verification:
+          method: "response"
+          loggedInRegex: "${LOGGED_IN_INDICATOR}"
+          loggedOutRegex: "${LOGGED_OUT_INDICATOR}"
+      sessionManagement:
+        method: "cookie"
+      users:
+        - name: "zap-auth-user"
+          credentials:
+            username: "${ZAP_LOGIN_USERNAME}"
+            password: "${ZAP_LOGIN_PASSWORD}"
+  parameters:
+    failOnError: true
+    failOnWarning: false
+    progressToStdout: true
+
+jobs:
+  - type: passiveScan-config
+    parameters:
+      maxAlertsPerRule: 10
+      scanOnlyInScope: true
+
+  - type: spider
+    parameters:
+      context: "AuthContext"
+      user: "zap-auth-user"
+      url: "${TARGET_URL}"
+      maxDuration: ${SPIDER_MAX_DURATION}
+      maxDepth: 10
+
+  - type: spiderAjax
+    parameters:
+      context: "AuthContext"
+      user: "zap-auth-user"
+      url: "${TARGET_URL}"
+      maxDuration: ${AJAX_SPIDER_MAX_DURATION}
+
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 10
+
+  - type: activeScan
+    parameters:
+      context: "AuthContext"
+      user: "zap-auth-user"
+      policy: "Default Policy"
+      maxScanDurationInMins: ${ACTIVE_SCAN_MAX_DURATION}
+
+  - type: report
+    parameters:
+      template: "traditional-html-plus"
+      reportDir: "/zap/wrk/reports"
+      reportFile: "zap-full-scan-report"
+      reportTitle: "OWASP ZAP Full Scan Report (Authenticated) - ${TARGET_URL}"
+      reportDescription: "Authenticated full scan: spider, ajax spider and active scan of the logged-in area."
+
+  - type: report
+    parameters:
+      template: "traditional-json"
+      reportDir: "/zap/wrk/reports"
+      reportFile: "zap-full-scan-report"
+
+  - type: report
+    parameters:
+      template: "traditional-xml"
+      reportDir: "/zap/wrk/reports"
+      reportFile: "zap-full-scan-report"
+
+  - type: exitStatus
+    parameters:
+      errorLevel: "High"
+      warnLevel: "Medium"

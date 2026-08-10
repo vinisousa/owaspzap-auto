@@ -1,0 +1,66 @@
+env:
+  contexts:
+    - name: "ApiContext"
+      urls:
+        - "${API_TARGET_URL}"
+      includePaths:
+        - "${API_TARGET_URL}.*"
+  parameters:
+    failOnError: true
+    failOnWarning: false
+    progressToStdout: true
+
+jobs:
+  - type: replacer
+    parameters:
+      deleteAllRules: false
+    rules:
+      - description: "Inject API authentication header"
+        url: ""
+        matchType: "REQ_HEADER"
+        matchString: "${API_AUTH_HEADER_NAME}"
+        matchRegex: false
+        replacementString: "${API_AUTH_HEADER_VALUE}"
+        tokenProcessing: false
+        initiators: []
+
+  - type: openapi
+    parameters:
+      apiUrl: "${OPENAPI_URL}"
+      targetUrl: "${API_TARGET_URL}"
+      context: "ApiContext"
+
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 10
+
+  - type: activeScan
+    parameters:
+      context: "ApiContext"
+      policy: "Default Policy"
+      maxScanDurationInMins: ${API_ACTIVE_SCAN_MAX_DURATION}
+
+  - type: report
+    parameters:
+      template: "traditional-html-plus"
+      reportDir: "/zap/wrk/reports"
+      reportFile: "zap-api-scan-report"
+      reportTitle: "OWASP ZAP API Scan Report (Authenticated) - ${API_TARGET_URL}"
+      reportDescription: "Authenticated API scan using an OpenAPI definition and header-based authentication."
+
+  - type: report
+    parameters:
+      template: "traditional-json"
+      reportDir: "/zap/wrk/reports"
+      reportFile: "zap-api-scan-report"
+
+  - type: report
+    parameters:
+      template: "traditional-xml"
+      reportDir: "/zap/wrk/reports"
+      reportFile: "zap-api-scan-report"
+
+  - type: exitStatus
+    parameters:
+      errorLevel: "High"
+      warnLevel: "Medium"

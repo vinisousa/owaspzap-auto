@@ -1,0 +1,176 @@
+name: OWASP ZAP Authenticated Scan
+
+# Manual trigger only. Enable the schedule below if you want recurring scans.
+on:
+  workflow_dispatch:
+    inputs:
+      run_web_scan:
+        description: "Run authenticated full scan of the web app (logged-in area)"
+        type: boolean
+        default: true
+      run_api_scan:
+        description: "Run authenticated API scan"
+        type: boolean
+        default: true
+  # schedule:
+  #   - cron: "0 3 * * 1" # every Monday at 03:00 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: owasp-zap-scan-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ZAP_IMAGE: "ghcr.io/zaproxy/zaproxy:stable"
+
+  # --- Web application target (non-secret) ---
+  TARGET_URL: ${{ vars.ZAP_TARGET_URL }}
+  LOGIN_URL: ${{ vars.ZAP_LOGIN_URL }}
+  LOGIN_REQUEST_URL: ${{ vars.ZAP_LOGIN_REQUEST_URL }}
+  LOGIN_USERNAME_FIELD: ${{ vars.ZAP_LOGIN_USERNAME_FIELD || 'username' }}
+  LOGIN_PASSWORD_FIELD: ${{ vars.ZAP_LOGIN_PASSWORD_FIELD || 'password' }}
+  LOGGED_IN_INDICATOR: ${{ vars.ZAP_LOGGED_IN_INDICATOR }}
+  LOGGED_OUT_INDICATOR: ${{ vars.ZAP_LOGGED_OUT_INDICATOR }}
+  SPIDER_MAX_DURATION: ${{ vars.ZAP_SPIDER_MAX_DURATION || '5' }}
+  AJAX_SPIDER_MAX_DURATION: ${{ vars.ZAP_AJAX_SPIDER_MAX_DURATION || '5' }}
+  ACTIVE_SCAN_MAX_DURATION: ${{ vars.ZAP_ACTIVE_SCAN_MAX_DURATION || '30' }}
+
+  # --- API target (non-secret) ---
+  API_TARGET_URL: ${{ vars.ZAP_API_TARGET_URL }}
+  OPENAPI_URL: ${{ vars.ZAP_OPENAPI_URL }}
+  API_AUTH_HEADER_NAME: ${{ vars.ZAP_API_AUTH_HEADER_NAME || 'Authorization' }}
+  API_ACTIVE_SCAN_MAX_DURATION: ${{ vars.ZAP_API_ACTIVE_SCAN_MAX_DURATION || '30' }}
+
+jobs:
+  web-scan:
+    name: Authenticated full scan (logged-in area)
+    if: ${{ github.event.inputs.run_web_scan != 'false' }}
+    runs-on: ubuntu-latest
+    env:
+      # Credentials come from repository/environment Secrets, never hardcoded.
+      ZAP_LOGIN_USERNAME: ${{ secrets.ZAP_LOGIN_USERNAME }}
+      ZAP_LOGIN_PASSWORD: ${{ secrets.ZAP_LOGIN_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required configuration
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -z "${TARGET_URL:-}" ] && missing+=("vars.ZAP_TARGET_URL")
+          [ -z "${LOGIN_URL:-}" ] && missing+=("vars.ZAP_LOGIN_URL")
+          [ -z "${LOGIN_REQUEST_URL:-}" ] && missing+=("vars.ZAP_LOGIN_REQUEST_URL")
+          [ -z "${LOGGED_IN_INDICATOR:-}" ] && missing+=("vars.ZAP_LOGGED_IN_INDICATOR")
+          [ -z "${ZAP_LOGIN_USERNAME:-}" ] && missing+=("secrets.ZAP_LOGIN_USERNAME")
+          [ -z "${ZAP_LOGIN_PASSWORD:-}" ] && missing+=("secrets.ZAP_LOGIN_PASSWORD")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing required configuration: ${missing[*]}"
+            echo "Configure these under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+      - name: Ensure envsubst is available
+        run: command -v envsubst >/dev/null 2>&1 || (sudo apt-get update -y && sudo apt-get install -y gettext-base)
+
+      - name: Render ZAP automation plan
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/zap-plans" "$RUNNER_TEMP/zap-reports/web"
+          envsubst < .zap/plans/full-scan.yaml.tmpl > "$RUNNER_TEMP/zap-plans/full-scan.yaml"
+          # Reports dir must be writable by the non-root user inside the ZAP image.
+          chmod -R 777 "$RUNNER_TEMP/zap-reports/web"
+
+      - name: Run OWASP ZAP full scan (authenticated)
+        run: |
+          set +e
+          docker run --rm \
+            -v "$RUNNER_TEMP/zap-plans:/zap/wrk/plans:ro" \
+            -v "$RUNNER_TEMP/zap-reports/web:/zap/wrk/reports:rw" \
+            -t "$ZAP_IMAGE" \
+            zap.sh -cmd -autorun /zap/wrk/plans/full-scan.yaml
+          echo "ZAP_EXIT_CODE=$?" >> "$GITHUB_ENV"
+
+      - name: Upload web scan reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-full-scan-reports
+          path: ${{ runner.temp }}/zap-reports/web
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Evaluate scan result
+        if: always()
+        run: |
+          case "${ZAP_EXIT_CODE:-1}" in
+            0) echo "ZAP full scan completed with no High/Medium alerts." ;;
+            1) echo "::error::ZAP full scan found High risk alerts (or the plan failed to run)."; exit 1 ;;
+            2) echo "::warning::ZAP full scan found Medium risk alerts." ;;
+            *) echo "::error::ZAP full scan exited with unexpected code ${ZAP_EXIT_CODE}."; exit 1 ;;
+          esac
+
+  api-scan:
+    name: Authenticated API scan
+    if: ${{ github.event.inputs.run_api_scan != 'false' }}
+    runs-on: ubuntu-latest
+    env:
+      # Full auth header value, e.g. "Bearer <token>" or "ApiKey <key>".
+      API_AUTH_HEADER_VALUE: ${{ secrets.ZAP_API_AUTH_HEADER_VALUE }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required configuration
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -z "${API_TARGET_URL:-}" ] && missing+=("vars.ZAP_API_TARGET_URL")
+          [ -z "${OPENAPI_URL:-}" ] && missing+=("vars.ZAP_OPENAPI_URL")
+          [ -z "${API_AUTH_HEADER_VALUE:-}" ] && missing+=("secrets.ZAP_API_AUTH_HEADER_VALUE")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing required configuration: ${missing[*]}"
+            echo "Configure these under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+      - name: Ensure envsubst is available
+        run: command -v envsubst >/dev/null 2>&1 || (sudo apt-get update -y && sudo apt-get install -y gettext-base)
+
+      - name: Render ZAP automation plan
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/zap-plans" "$RUNNER_TEMP/zap-reports/api"
+          envsubst < .zap/plans/api-scan.yaml.tmpl > "$RUNNER_TEMP/zap-plans/api-scan.yaml"
+          chmod -R 777 "$RUNNER_TEMP/zap-reports/api"
+
+      - name: Run OWASP ZAP API scan (authenticated)
+        run: |
+          set +e
+          docker run --rm \
+            -v "$RUNNER_TEMP/zap-plans:/zap/wrk/plans:ro" \
+            -v "$RUNNER_TEMP/zap-reports/api:/zap/wrk/reports:rw" \
+            -t "$ZAP_IMAGE" \
+            zap.sh -cmd -autorun /zap/wrk/plans/api-scan.yaml
+          echo "ZAP_EXIT_CODE=$?" >> "$GITHUB_ENV"
+
+      - name: Upload API scan reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-api-scan-reports
+          path: ${{ runner.temp }}/zap-reports/api
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Evaluate scan result
+        if: always()
+        run: |
+          case "${ZAP_EXIT_CODE:-1}" in
+            0) echo "ZAP API scan completed with no High/Medium alerts." ;;
+            1) echo "::error::ZAP API scan found High risk alerts (or the plan failed to run)."; exit 1 ;;
+            2) echo "::warning::ZAP API scan found Medium risk alerts." ;;
+            *) echo "::error::ZAP API scan exited with unexpected code ${ZAP_EXIT_CODE}."; exit 1 ;;
+          esac
