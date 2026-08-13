@@ -49,6 +49,10 @@ jobs:
       user: "zap-auth-user"
       url: "${TARGET_URL}"
       maxDuration: ${AJAX_SPIDER_MAX_DURATION}
+      # htmlunit is a pure-Java headless "browser" with no external process to launch,
+      # unlike the default firefox-headless which reliably crashes the container here
+      # (Firefox fails to start under Docker's default seccomp/user constraints).
+      browserId: "htmlunit"
 
   - type: passiveScan-wait
     parameters:
