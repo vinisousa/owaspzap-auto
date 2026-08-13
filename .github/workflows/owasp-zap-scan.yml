@@ -87,6 +87,7 @@ jobs:
         run: |
           set +e
           docker run --rm \
+            --shm-size=2g \
             -v "$RUNNER_TEMP/zap-plans:/zap/wrk/plans:ro" \
             -v "$RUNNER_TEMP/zap-reports/web:/zap/wrk/reports:rw" \
             -t "$ZAP_IMAGE" \
