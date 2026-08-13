@@ -120,6 +120,12 @@ jobs:
             exit 1
           fi
 
+          echo "--- DEBUG report structure (temporary) ---"
+          jq 'keys' "$REPORT_JSON"
+          jq '[.site[]? | {"@name","@host","@port", alertCount: (.alerts | length)}]' "$REPORT_JSON"
+          jq '[.site[]?.alerts[]? | {name, riskcode, riskdesc}]' "$REPORT_JSON"
+          echo "--- END DEBUG ---"
+
           HIGH_COUNT=$(jq '[.site[]?.alerts[]? | select(.riskcode=="3")] | length' "$REPORT_JSON")
           MEDIUM_COUNT=$(jq '[.site[]?.alerts[]? | select(.riskcode=="2")] | length' "$REPORT_JSON")
           echo "High risk alerts: $HIGH_COUNT"
