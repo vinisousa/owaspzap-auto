@@ -86,13 +86,26 @@ jobs:
       - name: Run OWASP ZAP full scan (authenticated)
         run: |
           set +e
-          docker run --rm \
+          echo "--- DEBUG host memory before run (temporary) ---"
+          free -h
+          echo "--- DEBUG dmesg OOM check before run (temporary) ---"
+          sudo dmesg -T 2>/dev/null | grep -i -E "out of memory|oom-kill|killed process" | tail -20 || echo "(no dmesg access or no OOM entries yet)"
+
+          docker run --name zap-web-scan --rm=false \
             --shm-size=2g \
             -v "$RUNNER_TEMP/zap-plans:/zap/wrk/plans:ro" \
             -v "$RUNNER_TEMP/zap-reports/web:/zap/wrk/reports:rw" \
             -t "$ZAP_IMAGE" \
             zap.sh -cmd -autorun /zap/wrk/plans/full-scan.yaml
           echo "ZAP_EXIT_CODE=$?" >> "$GITHUB_ENV"
+
+          echo "--- DEBUG host memory after run (temporary) ---"
+          free -h
+          echo "--- DEBUG docker inspect OOMKilled/state (temporary) ---"
+          docker inspect zap-web-scan --format '{{json .State}}' | jq .
+          echo "--- DEBUG dmesg OOM check after run (temporary) ---"
+          sudo dmesg -T 2>/dev/null | grep -i -E "out of memory|oom-kill|killed process" | tail -20 || echo "(no dmesg access or no OOM entries)"
+          docker rm zap-web-scan >/dev/null 2>&1
 
       - name: Upload web scan reports
         if: always()
