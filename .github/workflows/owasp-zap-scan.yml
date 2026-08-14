@@ -193,6 +193,16 @@ jobs:
           envsubst < .zap/plans/api-scan.yaml.tmpl > "$RUNNER_TEMP/zap-plans/api-scan.yaml"
           chmod -R 777 "$RUNNER_TEMP/zap-reports/api"
 
+      - name: Debug OpenAPI URL response (temporary)
+        run: |
+          set +e
+          echo "--- Fetching OPENAPI_URL directly from the runner ---"
+          curl -sS -D - -o /tmp/openapi-body.json "$OPENAPI_URL"
+          echo "--- First 1000 bytes of body ---"
+          head -c 1000 /tmp/openapi-body.json
+          echo
+          echo "--- END ---"
+
       - name: Run OWASP ZAP API scan (authenticated)
         run: |
           set +e
