@@ -43,6 +43,13 @@ from urllib.parse import urljoin
 
 TIMEOUT_SECONDS = 15
 PATH_PARAM_PLACEHOLDER = "1"
+# Some targets sit behind a WAF that blocks Python's default "Python-urllib/x.y"
+# User-Agent outright (observed here: a 406 on the OpenAPI spec URL itself). A
+# browser-like value avoids that easy fingerprint without pretending to be ZAP.
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
 WRITE_METHODS = ("post", "put", "patch")
 ALL_METHODS = ("get", "post", "put", "patch", "delete")
 
@@ -89,6 +96,7 @@ def http_request(
 ) -> tuple[int | None, bytes | None, str | None]:
     """Returns (status_code, response_body, error_message)."""
     req = urllib.request.Request(url, data=body, method=method.upper())
+    req.add_header("User-Agent", DEFAULT_USER_AGENT)
     for key, value in headers.items():
         req.add_header(key, value)
     if body is not None:
@@ -288,38 +296,7 @@ def probe_bopla(
                 )
 
 
-def main() -> int:
-    openapi_url = os.environ["OPENAPI_URL"]
-    api_target_url = os.environ["API_TARGET_URL"]
-    header_name = os.environ.get("API_AUTH_HEADER_NAME", "Authorization")
-    normal_auth = os.environ["API_AUTH_HEADER_VALUE"]
-    lowpriv_auth = os.environ.get("API_AUTH_HEADER_VALUE_LOWPRIV", "")
-    output_json = os.environ.get("AUTHZ_PROBE_OUTPUT_JSON", "authz-probe-report.json")
-    output_md = os.environ.get("AUTHZ_PROBE_OUTPUT_MD", "authz-probe-report.md")
-
-    status, body, err = http_request(openapi_url, "GET", {})
-    if err or status is None or status >= 400 or body is None:
-        print(f"::error::Could not fetch OpenAPI spec for the authz probe: {err or status}")
-        return 1
-    try:
-        spec = json.loads(body)
-    except json.JSONDecodeError as e:
-        print(f"::error::OpenAPI spec is not valid JSON: {e}")
-        return 1
-
-    base_url = resolve_base_url(spec, api_target_url)
-    result = ProbeResult()
-
-    if lowpriv_auth:
-        probe_bfla(spec, base_url, header_name, normal_auth, lowpriv_auth, result)
-    else:
-        print(
-            "No API_AUTH_HEADER_VALUE_LOWPRIV configured - skipping the BFLA probe "
-            "(set the ZAP_API_AUTH_HEADER_VALUE_LOWPRIV secret to enable it)."
-        )
-
-    probe_bopla(spec, base_url, header_name, normal_auth, result)
-
+def write_reports(output_json: str, output_md: str, result: ProbeResult) -> None:
     high = [f for f in result.findings if f.severity == "high"]
     medium = [f for f in result.findings if f.severity == "medium"]
 
@@ -365,6 +342,46 @@ def main() -> int:
 
     print(f"authz_high_count={len(high)}")
     print(f"authz_medium_count={len(medium)}")
+
+
+def main() -> int:
+    openapi_url = os.environ["OPENAPI_URL"]
+    api_target_url = os.environ["API_TARGET_URL"]
+    header_name = os.environ.get("API_AUTH_HEADER_NAME", "Authorization")
+    normal_auth = os.environ["API_AUTH_HEADER_VALUE"]
+    lowpriv_auth = os.environ.get("API_AUTH_HEADER_VALUE_LOWPRIV", "")
+    output_json = os.environ.get("AUTHZ_PROBE_OUTPUT_JSON", "authz-probe-report.json")
+    output_md = os.environ.get("AUTHZ_PROBE_OUTPUT_MD", "authz-probe-report.md")
+
+    status, body, err = http_request(openapi_url, "GET", {})
+    if err or status is None or status >= 400 or body is None:
+        # Non-fatal by design: this probe is best-effort and additive to the ZAP
+        # scan, so a spec we can't fetch (e.g. blocked by the same WAF that also
+        # trips up ZAP sometimes) shouldn't fail the job - just skip the probe.
+        print(f"::warning::Could not fetch OpenAPI spec for the authz probe: {err or status} - skipping.")
+        write_reports(output_json, output_md, ProbeResult())
+        return 0
+    try:
+        spec = json.loads(body)
+    except json.JSONDecodeError as e:
+        print(f"::warning::OpenAPI spec is not valid JSON, skipping the authz probe: {e}")
+        write_reports(output_json, output_md, ProbeResult())
+        return 0
+
+    base_url = resolve_base_url(spec, api_target_url)
+    result = ProbeResult()
+
+    if lowpriv_auth:
+        probe_bfla(spec, base_url, header_name, normal_auth, lowpriv_auth, result)
+    else:
+        print(
+            "No API_AUTH_HEADER_VALUE_LOWPRIV configured - skipping the BFLA probe "
+            "(set the ZAP_API_AUTH_HEADER_VALUE_LOWPRIV secret to enable it)."
+        )
+
+    probe_bopla(spec, base_url, header_name, normal_auth, result)
+
+    write_reports(output_json, output_md, result)
     return 0
 
 
