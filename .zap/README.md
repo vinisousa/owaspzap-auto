@@ -40,13 +40,42 @@ de ambiente vindas de **Secrets** e **Variables** do GitHub Actions.
 | `ZAP_LOGIN_USERNAME` | sim (web) | Usuário para autenticação na área logada |
 | `ZAP_LOGIN_PASSWORD` | sim (web) | Senha para autenticação na área logada |
 | `ZAP_API_AUTH_HEADER_VALUE` | sim (api) | Valor completo do header de auth da API, ex.: `Bearer <token>` |
+| `ZAP_API_AUTH_HEADER_VALUE_LOWPRIV` | não | Credencial de um usuário **menos privilegiado**, usada só pelo probe de BFLA (ver abaixo). Sem ela o probe de BFLA é pulado. |
 
 ## Resultado
 
 Os relatórios (HTML, JSON e XML) ficam disponíveis como artifacts do workflow
-(`zap-full-scan-reports` e `zap-api-scan-reports`). O job falha automaticamente se o ZAP
-encontrar alertas de risco **High** (exit code 1) e emite um warning para risco **Medium**
-(exit code 2), sem quebrar o build.
+(`zap-full-scan-reports` e `zap-api-scan-reports`). O step "Evaluate scan result" de cada
+job usa um exit code próprio: `0` = sem alertas High/Medium, `1` = o scan não completou
+(falha de execução), `2` = achou alerta **High**, `3` = achou alerta **Medium** (sem High).
+O job falha (vermelho no Actions) em qualquer código diferente de 0, mas o motivo real —
+"achou vulnerabilidade" vs. "o scan travou" — sempre fica explícito no log e nos outputs
+`high_alert_count`/`medium_alert_count`/`high_alerts_found` do step.
+
+### Probe de BFLA / BOPLA (job `api-scan`)
+
+O Automation Framework do ZAP não tem job nativo para os addons **Access Control Testing**
+(BOLA/BFLA) nem **Fuzzer** (BOPLA) — ambos exigem rodar o ZAP como daemon e pilotar a API
+Java/Python dele, ou (no caso do Access Control) uma matriz de acesso curada manualmente por
+URL. Em vez disso, o job `api-scan` roda um step extra, `.zap/scripts/api_authz_probe.py`
+(sem dependências externas, só stdlib), que faz dois checks heurísticos direto contra a spec
+OpenAPI:
+
+- **BFLA (OWASP API5)**: repete todo endpoint da spec com a credencial `ZAP_API_AUTH_HEADER_VALUE_LOWPRIV`
+  e sinaliza qualquer um que responda 2xx — especialmente em métodos de escrita (POST/PUT/PATCH/DELETE).
+- **BOPLA (OWASP API3)**: para endpoints de escrita com corpo JSON, monta um payload a partir do
+  schema declarado e adiciona propriedades **fora** do schema (`role`, `isAdmin`, `permissions`,
+  `balance`, etc.); sinaliza se a API aceitar (e mais ainda se ecoar a propriedade de volta).
+
+O resultado vira o artifact `zap-authz-probe-report` (JSON + Markdown) e aparece como
+`::warning::` no log — **nunca falha o job sozinho**, porque é um probe heurístico sujeito a
+falso positivo (ex.: um endpoint público de propósito também aparece como "achado" de BFLA).
+Cada achado precisa de revisão humana antes de virar um bug real.
+
+**Fora do escopo por enquanto**: BOLA verdadeiro (mesmo endpoint, ID de um recurso que
+pertence a *outro* usuário) não é testado, porque isso exige saber qual ID pertence a qual
+usuário — algo que não dá pra inferir só da spec OpenAPI. Se quiser isso automatizado, é
+preciso fornecer um mapeamento endpoint → (ID do usuário A, ID do usuário B).
 
 ## Observações
 

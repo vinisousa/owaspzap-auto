@@ -166,6 +166,8 @@ jobs:
     env:
       # Full auth header value, e.g. "Bearer <token>" or "ApiKey <key>".
       API_AUTH_HEADER_VALUE: ${{ secrets.ZAP_API_AUTH_HEADER_VALUE }}
+      # Optional: a second, lower-privileged credential used only by the BFLA probe below.
+      API_AUTH_HEADER_VALUE_LOWPRIV: ${{ secrets.ZAP_API_AUTH_HEADER_VALUE_LOWPRIV }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -210,6 +212,33 @@ jobs:
         with:
           name: zap-api-scan-reports
           path: ${{ runner.temp }}/zap-reports/api
+          retention-days: 14
+          if-no-files-found: warn
+
+      # ZAP's Automation Framework has no job type for the "Access Control Testing" or
+      # Fuzzer add-ons, and both need either a hand-curated access matrix or a live ZAP
+      # daemon driven through its scripting API. This is a lightweight stand-in that
+      # doesn't need either: it replays every OpenAPI operation with a second,
+      # lower-privileged credential (BFLA / OWASP API5) and probes write endpoints with
+      # extra, undeclared body properties (BOPLA / OWASP API3). It's independent of
+      # whether the ZAP scan above succeeded, and it never fails the job on its own -
+      # findings are heuristic and need human review, so they're surfaced as warnings
+      # and an artifact rather than a hard failure.
+      - name: BFLA/BOPLA differential authorization probe
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/authz-probe"
+          AUTHZ_PROBE_OUTPUT_JSON="$RUNNER_TEMP/authz-probe/authz-probe-report.json" \
+          AUTHZ_PROBE_OUTPUT_MD="$RUNNER_TEMP/authz-probe/authz-probe-report.md" \
+          python3 .zap/scripts/api_authz_probe.py
+
+      - name: Upload authorization probe report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-authz-probe-report
+          path: ${{ runner.temp }}/authz-probe
           retention-days: 14
           if-no-files-found: warn
 
