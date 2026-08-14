@@ -166,8 +166,15 @@ jobs:
     env:
       # Full auth header value, e.g. "Bearer <token>" or "ApiKey <key>".
       API_AUTH_HEADER_VALUE: ${{ secrets.ZAP_API_AUTH_HEADER_VALUE }}
-      # Optional: a second, lower-privileged credential used only by the BFLA probe below.
+      # Optional: a static, already-minted low-privileged header value used by the BFLA
+      # probe below. Superseded by a freshly minted token if ZAP_LOWPRIV_USERNAME/PASSWORD
+      # are also set (see the "Mint low-privileged API token" step) - prefer those since a
+      # static token here will eventually expire.
       API_AUTH_HEADER_VALUE_LOWPRIV: ${{ secrets.ZAP_API_AUTH_HEADER_VALUE_LOWPRIV }}
+      # Optional: credentials for a low-privileged account, used to mint a fresh
+      # API_AUTH_HEADER_VALUE_LOWPRIV via the API's own login endpoint before each run.
+      LOWPRIV_USERNAME: ${{ secrets.ZAP_LOWPRIV_USERNAME }}
+      LOWPRIV_PASSWORD: ${{ secrets.ZAP_LOWPRIV_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -214,6 +221,21 @@ jobs:
           path: ${{ runner.temp }}/zap-reports/api
           retention-days: 14
           if-no-files-found: warn
+
+      # Logs in through the API's own login endpoint with a low-privileged account to
+      # mint a fresh API_AUTH_HEADER_VALUE_LOWPRIV for the BFLA probe below, so nobody
+      # has to obtain and rotate a static token by hand. No-op (and non-fatal) if
+      # ZAP_LOWPRIV_USERNAME/PASSWORD aren't set - the probe below then falls back to
+      # ZAP_API_AUTH_HEADER_VALUE_LOWPRIV if that's set, or skips the BFLA check entirely.
+      - name: Mint low-privileged API token (for BFLA probe)
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -z "${LOWPRIV_USERNAME:-}" ] || [ -z "${LOWPRIV_PASSWORD:-}" ]; then
+            echo "No ZAP_LOWPRIV_USERNAME/ZAP_LOWPRIV_PASSWORD configured - skipping token minting."
+            exit 0
+          fi
+          python3 .zap/scripts/mint_api_token.py
 
       # ZAP's Automation Framework has no job type for the "Access Control Testing" or
       # Fuzzer add-ons, and both need either a hand-curated access matrix or a live ZAP

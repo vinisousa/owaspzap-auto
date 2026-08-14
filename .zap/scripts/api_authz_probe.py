@@ -84,7 +84,8 @@ class Finding:
 @dataclass
 class ProbeResult:
     findings: list[Finding] = field(default_factory=list)
-    endpoints_tested: int = 0
+    bfla_endpoints_tested: int = 0
+    bopla_endpoints_tested: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -201,7 +202,7 @@ def probe_bfla(
             operation = path_item.get(method)
             if not isinstance(operation, dict):
                 continue
-            result.endpoints_tested += 1
+            result.bfla_endpoints_tested += 1
 
             normal_status, _, normal_err = http_request(
                 url, method, {header_name: normal_auth}
@@ -251,6 +252,7 @@ def probe_bopla(
             schema = get_json_body_schema(operation, spec)
             if schema is None or schema.get("type") not in (None, "object"):
                 continue
+            result.bopla_endpoints_tested += 1
 
             baseline_body = build_sample_object(schema)
             declared_props = set(schema.get("properties", {}).keys())
@@ -303,7 +305,8 @@ def write_reports(output_json: str, output_md: str, result: ProbeResult) -> None
     with open(output_json, "w") as f:
         json.dump(
             {
-                "endpoints_tested": result.endpoints_tested,
+                "bfla_endpoints_tested": result.bfla_endpoints_tested,
+                "bopla_endpoints_tested": result.bopla_endpoints_tested,
                 "findings": [vars(f) for f in result.findings],
                 "errors": result.errors,
             },
@@ -317,7 +320,8 @@ def write_reports(output_json: str, output_md: str, result: ProbeResult) -> None
             "Heuristic probe, not the ZAP Access Control Testing add-on. "
             "Every finding below needs human review before being treated as a real vulnerability.\n\n"
         )
-        f.write(f"- Endpoints tested: {result.endpoints_tested}\n")
+        f.write(f"- BFLA endpoints tested: {result.bfla_endpoints_tested}\n")
+        f.write(f"- BOPLA endpoints tested: {result.bopla_endpoints_tested}\n")
         f.write(f"- High-severity findings: {len(high)}\n")
         f.write(f"- Medium-severity findings: {len(medium)}\n")
         f.write(f"- Request errors: {len(result.errors)}\n\n")
@@ -332,7 +336,8 @@ def write_reports(output_json: str, output_md: str, result: ProbeResult) -> None
         else:
             f.write("No findings.\n")
 
-    print(f"Endpoints tested: {result.endpoints_tested}")
+    print(f"BFLA endpoints tested: {result.bfla_endpoints_tested}")
+    print(f"BOPLA endpoints tested: {result.bopla_endpoints_tested}")
     print(f"High-severity findings: {len(high)}")
     print(f"Medium-severity findings: {len(medium)}")
     for finding in result.findings:

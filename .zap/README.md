@@ -40,7 +40,9 @@ de ambiente vindas de **Secrets** e **Variables** do GitHub Actions.
 | `ZAP_LOGIN_USERNAME` | sim (web) | Usuário para autenticação na área logada |
 | `ZAP_LOGIN_PASSWORD` | sim (web) | Senha para autenticação na área logada |
 | `ZAP_API_AUTH_HEADER_VALUE` | sim (api) | Valor completo do header de auth da API, ex.: `Bearer <token>` |
-| `ZAP_API_AUTH_HEADER_VALUE_LOWPRIV` | não | Credencial de um usuário **menos privilegiado**, usada só pelo probe de BFLA (ver abaixo). Sem ela o probe de BFLA é pulado. |
+| `ZAP_API_AUTH_HEADER_VALUE_LOWPRIV` | não | Header já pronto (`Bearer <token>`) de um usuário **menos privilegiado**, usado pelo probe de BFLA. Ignorado se `ZAP_LOWPRIV_USERNAME`/`ZAP_LOWPRIV_PASSWORD` estiverem configurados (preferível, já que um token estático expira). |
+| `ZAP_LOWPRIV_USERNAME` | não | Usuário/e-mail de uma conta **menos privilegiada** — o workflow faz login sozinho no endpoint de login da API pra gerar um token fresco a cada execução. |
+| `ZAP_LOWPRIV_PASSWORD` | não | Senha da conta acima. |
 
 ## Resultado
 
@@ -61,7 +63,8 @@ URL. Em vez disso, o job `api-scan` roda um step extra, `.zap/scripts/api_authz_
 (sem dependências externas, só stdlib), que faz dois checks heurísticos direto contra a spec
 OpenAPI:
 
-- **BFLA (OWASP API5)**: repete todo endpoint da spec com a credencial `ZAP_API_AUTH_HEADER_VALUE_LOWPRIV`
+- **BFLA (OWASP API5)**: repete todo endpoint da spec com a credencial de baixo privilégio (`ZAP_LOWPRIV_USERNAME`/`ZAP_LOWPRIV_PASSWORD`,
+  logada automaticamente pelo `.zap/scripts/mint_api_token.py`, ou o `ZAP_API_AUTH_HEADER_VALUE_LOWPRIV` estático)
   e sinaliza qualquer um que responda 2xx — especialmente em métodos de escrita (POST/PUT/PATCH/DELETE).
 - **BOPLA (OWASP API3)**: para endpoints de escrita com corpo JSON, monta um payload a partir do
   schema declarado e adiciona propriedades **fora** do schema (`role`, `isAdmin`, `permissions`,
@@ -71,6 +74,13 @@ O resultado vira o artifact `zap-authz-probe-report` (JSON + Markdown) e aparece
 `::warning::` no log — **nunca falha o job sozinho**, porque é um probe heurístico sujeito a
 falso positivo (ex.: um endpoint público de propósito também aparece como "achado" de BFLA).
 Cada achado precisa de revisão humana antes de virar um bug real.
+
+`mint_api_token.py` acha o endpoint de login sozinho (procura na spec um path com `post` cujo
+nome contenha "login"/"auth"/"signin"), mapeia os campos do schema (`email`/`username` e
+`password`) e procura um token na resposta (top-level ou um nível aninhado, testando nomes
+comuns como `token`, `access_token`, `jwt`). Se não achar, só loga as **chaves** da resposta
+(nunca os valores) e pula o probe de BFLA sem quebrar o job — dá pra ver esse aviso no log do
+step "Mint low-privileged API token" e ajustar se o formato da API for diferente do esperado.
 
 **Fora do escopo por enquanto**: BOLA verdadeiro (mesmo endpoint, ID de um recurso que
 pertence a *outro* usuário) não é testado, porque isso exige saber qual ID pertence a qual
