@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""Mint a bearer token for a low-privileged account via the API's login endpoint.
+"""Mint a bearer token for an account via the API's login endpoint.
 
-Feeds API_AUTH_HEADER_VALUE_LOWPRIV for api_authz_probe.py's BFLA check,
-without needing a manually obtained (and eventually expiring) static
-token. Finds the login operation in the OpenAPI spec, maps its request
-schema's field names to username/password, logs in with the given
-credentials, and searches the JSON response for a token field.
+Feeds api_authz_probe.py's BFLA and BOLA checks with a fresh token for
+a given account, without needing a manually obtained (and eventually
+expiring) static one. Finds the login operation in the OpenAPI spec,
+maps its request schema's field names to username/password, logs in
+with the given credentials, and searches the JSON response for a token
+field. Reads credentials from, and writes the resulting token to,
+whichever env vars MINT_USERNAME_VAR/MINT_PASSWORD_VAR/MINT_OUTPUT_VAR
+point at - call this script once per account it needs to mint a token
+for.
 
 Never fails the job: any problem (spec unreachable, no login-like path,
 bad credentials, unrecognized response shape) is logged as a warning
-and simply leaves API_AUTH_HEADER_VALUE_LOWPRIV unset, so the BFLA
-probe skips itself exactly like it does when this step isn't run at
-all. On failure to locate a token, only the response's key names are
+and simply leaves the output env var unset, so any probe depending on
+it skips itself exactly like it does when this step isn't run at all.
+On failure to locate a token, only the response's key names are
 logged - never values, since the response is exactly the kind of
 payload that might carry the credentials or token itself.
 """
@@ -107,23 +111,31 @@ def find_token(obj, depth: int = 0) -> str | None:
 
 
 def main() -> int:
+    # Which env vars to read credentials from and which one to write the minted
+    # token to are all configurable, so this same script can mint more than one
+    # account's token in a workflow (e.g. two low-privileged users for a BOLA
+    # cross-test) just by pointing it at different env var names each time.
+    username_var = os.environ.get("MINT_USERNAME_VAR", "LOWPRIV_USERNAME")
+    password_var = os.environ.get("MINT_PASSWORD_VAR", "LOWPRIV_PASSWORD")
+    output_var = os.environ.get("MINT_OUTPUT_VAR", "API_AUTH_HEADER_VALUE_LOWPRIV")
+
     openapi_url = os.environ["OPENAPI_URL"]
     api_target_url = os.environ["API_TARGET_URL"]
-    username = os.environ["LOWPRIV_USERNAME"]
-    password = os.environ["LOWPRIV_PASSWORD"]
+    username = os.environ[username_var]
+    password = os.environ[password_var]
     header_prefix = os.environ.get("LOWPRIV_TOKEN_PREFIX", "Bearer ")
 
     status, body, err = http_request(openapi_url, "GET", {})
     if err or status is None or status >= 400 or body is None:
         print(
-            f"::warning::Could not fetch the OpenAPI spec to mint a low-priv token "
-            f"({err or status}) - the BFLA probe will be skipped."
+            f"::warning::Could not fetch the OpenAPI spec to mint a token for {output_var} "
+            f"({err or status}) - the probe(s) depending on it will be skipped."
         )
         return 0
     try:
         spec = json.loads(body)
     except json.JSONDecodeError:
-        print("::warning::OpenAPI spec is not valid JSON - the BFLA probe will be skipped.")
+        print("::warning::OpenAPI spec is not valid JSON - the probe(s) depending on it will be skipped.")
         return 0
 
     servers = spec.get("servers")
@@ -134,7 +146,7 @@ def main() -> int:
     if path is None or op is None:
         print(
             "::warning::No login-like path (post + 'login'/'auth' in the URL) found in "
-            "the OpenAPI spec - the BFLA probe will be skipped."
+            "the OpenAPI spec - the probe(s) depending on it will be skipped."
         )
         return 0
 
@@ -150,16 +162,16 @@ def main() -> int:
     status, resp_body, err = http_request(url, "POST", {}, body=json.dumps(payload).encode())
 
     if err:
-        print(f"::warning::Login request to {path} failed ({err}) - the BFLA probe will be skipped.")
+        print(f"::warning::Login request to {path} failed ({err}) - the probe(s) depending on it will be skipped.")
         return 0
     if status is None or status >= 400:
-        print(f"::warning::Login to {path} returned {status} - the BFLA probe will be skipped.")
+        print(f"::warning::Login to {path} returned {status} - the probe(s) depending on it will be skipped.")
         return 0
 
     try:
         resp_json = json.loads(resp_body) if resp_body else {}
     except json.JSONDecodeError:
-        print(f"::warning::Login response from {path} was not JSON - the BFLA probe will be skipped.")
+        print(f"::warning::Login response from {path} was not JSON - the probe(s) depending on it will be skipped.")
         return 0
 
     token = find_token(resp_json)
@@ -167,7 +179,7 @@ def main() -> int:
         print(
             f"::warning::Logged in via {path} but found no token field in the response "
             f"(top-level keys: {sorted(resp_json.keys()) if isinstance(resp_json, dict) else 'n/a'}) "
-            "- the BFLA probe will be skipped."
+            "- the probe(s) depending on it will be skipped."
         )
         return 0
 
@@ -175,8 +187,8 @@ def main() -> int:
     github_env = os.environ.get("GITHUB_ENV")
     if github_env:
         with open(github_env, "a") as f:
-            f.write(f"API_AUTH_HEADER_VALUE_LOWPRIV={header_prefix}{token}\n")
-    print(f"Minted a low-privileged token via POST {path} (username field '{username_field}').")
+            f.write(f"{output_var}={header_prefix}{token}\n")
+    print(f"Minted a token for {output_var} via POST {path} (username field '{username_field}').")
     return 0
 
 

@@ -42,6 +42,9 @@ env:
   OPENAPI_URL: ${{ vars.ZAP_OPENAPI_URL }}
   API_AUTH_HEADER_NAME: ${{ vars.ZAP_API_AUTH_HEADER_NAME || 'Authorization' }}
   API_ACTIVE_SCAN_MAX_DURATION: ${{ vars.ZAP_API_ACTIVE_SCAN_MAX_DURATION || '30' }}
+  # Optional: JSON array of {path, method, id_param, id_a, id_b} for the BOLA probe.
+  # id_a must belong to the ZAP_LOWPRIV_* account, id_b to ZAP_LOWPRIV2_* (see below).
+  BOLA_TARGETS: ${{ vars.ZAP_BOLA_TARGETS }}
 
 jobs:
   web-scan:
@@ -175,6 +178,10 @@ jobs:
       # API_AUTH_HEADER_VALUE_LOWPRIV via the API's own login endpoint before each run.
       LOWPRIV_USERNAME: ${{ secrets.ZAP_LOWPRIV_USERNAME }}
       LOWPRIV_PASSWORD: ${{ secrets.ZAP_LOWPRIV_PASSWORD }}
+      # Optional: a second, different low-privileged account, needed only for the BOLA
+      # probe (see BOLA_TARGETS above) - it must own the object id_b of every target.
+      LOWPRIV2_USERNAME: ${{ secrets.ZAP_LOWPRIV2_USERNAME }}
+      LOWPRIV2_PASSWORD: ${{ secrets.ZAP_LOWPRIV2_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -237,16 +244,33 @@ jobs:
           fi
           python3 .zap/scripts/mint_api_token.py
 
+      # Same as above, for a second account - needed only for the BOLA probe, which has
+      # to compare two different accounts' access to each other's objects. No-op if
+      # ZAP_LOWPRIV2_USERNAME/PASSWORD aren't set.
+      - name: Mint second low-privileged API token (for BOLA probe)
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -z "${LOWPRIV2_USERNAME:-}" ] || [ -z "${LOWPRIV2_PASSWORD:-}" ]; then
+            echo "No ZAP_LOWPRIV2_USERNAME/ZAP_LOWPRIV2_PASSWORD configured - skipping token minting."
+            exit 0
+          fi
+          MINT_USERNAME_VAR=LOWPRIV2_USERNAME \
+          MINT_PASSWORD_VAR=LOWPRIV2_PASSWORD \
+          MINT_OUTPUT_VAR=API_AUTH_HEADER_VALUE_LOWPRIV_B \
+          python3 .zap/scripts/mint_api_token.py
+
       # ZAP's Automation Framework has no job type for the "Access Control Testing" or
       # Fuzzer add-ons, and both need either a hand-curated access matrix or a live ZAP
       # daemon driven through its scripting API. This is a lightweight stand-in that
       # doesn't need either: it replays every OpenAPI operation with a second,
-      # lower-privileged credential (BFLA / OWASP API5) and probes write endpoints with
-      # extra, undeclared body properties (BOPLA / OWASP API3). It's independent of
-      # whether the ZAP scan above succeeded, and it never fails the job on its own -
-      # findings are heuristic and need human review, so they're surfaced as warnings
-      # and an artifact rather than a hard failure.
-      - name: BFLA/BOPLA differential authorization probe
+      # lower-privileged credential (BFLA / OWASP API5), probes write endpoints with
+      # extra, undeclared body properties (BOPLA / OWASP API3), and - if BOLA_TARGETS is
+      # set - cross-tests two accounts' access to each other's known objects (BOLA /
+      # OWASP API1). It's independent of whether the ZAP scan above succeeded, and it
+      # never fails the job on its own - findings are heuristic and need human review,
+      # so they're surfaced as warnings and an artifact rather than a hard failure.
+      - name: BFLA/BOPLA/BOLA differential authorization probe
         if: always()
         run: |
           set -euo pipefail

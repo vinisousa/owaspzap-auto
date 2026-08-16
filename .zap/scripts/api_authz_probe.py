@@ -17,14 +17,18 @@ ZAP Automation Framework and therefore can't be added as another
     that are NOT part of that schema (role, isAdmin, permissions, ...),
     and flags calls that still succeed - a mass-assignment signal.
 
+  * BOLA (OWASP API1) - Broken Object Level Authorization
+    Given BOLA_TARGETS (a JSON list of {path, method, id_param, id_a,
+    id_b}, where id_a/id_b are object IDs known to belong to two
+    different accounts), replays each path with Account A's object ID
+    under Account B's credential and vice versa, flagging any cross-
+    account access that succeeds. Unlike BFLA/BOPLA this needs to be
+    told which IDs belong to whom - it can't be inferred from the spec.
+
 This is a heuristic differential probe, not the ZAP "Access Control
 Testing" add-on (which requires a hand-curated access matrix and has
 no Automation Framework job either). Findings need human review; a 2xx
 here means "look at this", not "this is definitely a vulnerability".
-
-True BOLA (same endpoint, a resource ID owned by someone else) is out
-of scope: it requires knowing which object IDs belong to which user,
-which can't be inferred from the OpenAPI spec alone.
 
 No third-party dependencies - stdlib only, so it runs on a bare
 ubuntu-latest runner without an extra pip install step.
@@ -86,6 +90,7 @@ class ProbeResult:
     findings: list[Finding] = field(default_factory=list)
     bfla_endpoints_tested: int = 0
     bopla_endpoints_tested: int = 0
+    bola_targets_tested: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -298,6 +303,75 @@ def probe_bopla(
                 )
 
 
+def probe_bola(
+    spec: dict,
+    base_url: str,
+    header_name: str,
+    targets_json: str,
+    auth_a: str,
+    auth_b: str,
+    result: ProbeResult,
+) -> None:
+    try:
+        targets = json.loads(targets_json)
+    except json.JSONDecodeError as e:
+        result.errors.append(f"BOLA_TARGETS is not valid JSON: {e}")
+        return
+    if not isinstance(targets, list):
+        result.errors.append("BOLA_TARGETS must be a JSON array")
+        return
+
+    for target in targets:
+        if not isinstance(target, dict):
+            result.errors.append(f"Skipping malformed BOLA target: {target!r}")
+            continue
+        path = target.get("path")
+        method = str(target.get("method", "post")).lower()
+        id_param = target.get("id_param")
+        id_a = target.get("id_a")
+        id_b = target.get("id_b")
+        if not path or not id_param or id_a is None or id_b is None:
+            result.errors.append(f"Skipping malformed BOLA target (need path/id_param/id_a/id_b): {target!r}")
+            continue
+
+        operation = spec.get("paths", {}).get(path, {})
+        operation = operation.get(method) if isinstance(operation, dict) else None
+        body = None
+        if isinstance(operation, dict):
+            schema = get_json_body_schema(operation, spec)
+            if schema is not None:
+                body = json.dumps(build_sample_object(schema)).encode()
+
+        result.bola_targets_tested += 1
+        placeholder = "{" + str(id_param) + "}"
+
+        # Account A's credential requesting Account B's object, and vice versa.
+        for owner_label, owner_id, requester_label, requester_auth in (
+            ("B", id_b, "A", auth_a),
+            ("A", id_a, "B", auth_b),
+        ):
+            concrete_path = path.replace(placeholder, str(owner_id))
+            url = urljoin(base_url + "/", concrete_path.lstrip("/"))
+            status, _, err = http_request(url, method, {header_name: requester_auth}, body=body)
+            if err:
+                result.errors.append(f"{method.upper()} {concrete_path} (BOLA): {err}")
+                continue
+            if status is not None and 200 <= status < 300:
+                result.findings.append(
+                    Finding(
+                        check="BOLA",
+                        method=method.upper(),
+                        path=path,
+                        detail=(
+                            f"Account {requester_label}'s credential accessed Account {owner_label}'s "
+                            f"object ({id_param}={owner_id}) and got {status}."
+                        ),
+                        status_code=status,
+                        severity="high",
+                    )
+                )
+
+
 def write_reports(output_json: str, output_md: str, result: ProbeResult) -> None:
     high = [f for f in result.findings if f.severity == "high"]
     medium = [f for f in result.findings if f.severity == "medium"]
@@ -307,6 +381,7 @@ def write_reports(output_json: str, output_md: str, result: ProbeResult) -> None
             {
                 "bfla_endpoints_tested": result.bfla_endpoints_tested,
                 "bopla_endpoints_tested": result.bopla_endpoints_tested,
+                "bola_targets_tested": result.bola_targets_tested,
                 "findings": [vars(f) for f in result.findings],
                 "errors": result.errors,
             },
@@ -315,13 +390,14 @@ def write_reports(output_json: str, output_md: str, result: ProbeResult) -> None
         )
 
     with open(output_md, "w") as f:
-        f.write("# BFLA / BOPLA differential authorization probe\n\n")
+        f.write("# BFLA / BOPLA / BOLA differential authorization probe\n\n")
         f.write(
             "Heuristic probe, not the ZAP Access Control Testing add-on. "
             "Every finding below needs human review before being treated as a real vulnerability.\n\n"
         )
         f.write(f"- BFLA endpoints tested: {result.bfla_endpoints_tested}\n")
         f.write(f"- BOPLA endpoints tested: {result.bopla_endpoints_tested}\n")
+        f.write(f"- BOLA targets tested: {result.bola_targets_tested}\n")
         f.write(f"- High-severity findings: {len(high)}\n")
         f.write(f"- Medium-severity findings: {len(medium)}\n")
         f.write(f"- Request errors: {len(result.errors)}\n\n")
@@ -338,6 +414,7 @@ def write_reports(output_json: str, output_md: str, result: ProbeResult) -> None
 
     print(f"BFLA endpoints tested: {result.bfla_endpoints_tested}")
     print(f"BOPLA endpoints tested: {result.bopla_endpoints_tested}")
+    print(f"BOLA targets tested: {result.bola_targets_tested}")
     print(f"High-severity findings: {len(high)}")
     print(f"Medium-severity findings: {len(medium)}")
     for finding in result.findings:
@@ -355,6 +432,8 @@ def main() -> int:
     header_name = os.environ.get("API_AUTH_HEADER_NAME", "Authorization")
     normal_auth = os.environ["API_AUTH_HEADER_VALUE"]
     lowpriv_auth = os.environ.get("API_AUTH_HEADER_VALUE_LOWPRIV", "")
+    lowpriv_auth_b = os.environ.get("API_AUTH_HEADER_VALUE_LOWPRIV_B", "")
+    bola_targets_json = os.environ.get("BOLA_TARGETS", "")
     output_json = os.environ.get("AUTHZ_PROBE_OUTPUT_JSON", "authz-probe-report.json")
     output_md = os.environ.get("AUTHZ_PROBE_OUTPUT_MD", "authz-probe-report.md")
 
@@ -385,6 +464,15 @@ def main() -> int:
         )
 
     probe_bopla(spec, base_url, header_name, normal_auth, result)
+
+    if bola_targets_json:
+        if lowpriv_auth and lowpriv_auth_b:
+            probe_bola(spec, base_url, header_name, bola_targets_json, lowpriv_auth, lowpriv_auth_b, result)
+        else:
+            print(
+                "BOLA_TARGETS is set but API_AUTH_HEADER_VALUE_LOWPRIV and/or "
+                "_LOWPRIV_B are missing - skipping the BOLA probe."
+            )
 
     write_reports(output_json, output_md, result)
     return 0
