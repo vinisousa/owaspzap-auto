@@ -20,6 +20,13 @@ env:
           pollUnits: "requests"
           loggedInRegex: "${LOGGED_IN_INDICATOR}"
           loggedOutRegex: "${LOGGED_OUT_INDICATOR}"
+      sessionManagement:
+        method: "cookie"
+      users:
+        - name: "zap-auth-user"
+          credentials:
+            username: "${ZAP_LOGIN_USERNAME}"
+            password: "${ZAP_LOGIN_PASSWORD}"
   parameters:
     failOnError: true
     failOnWarning: false
