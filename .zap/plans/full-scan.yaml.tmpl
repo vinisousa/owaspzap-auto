@@ -8,22 +8,18 @@ env:
       excludePaths:
         - "${TARGET_URL}/logout.*"
       authentication:
-        method: "form"
+        method: "json"
         parameters:
           loginPageUrl: "${LOGIN_URL}"
           loginRequestUrl: "${LOGIN_REQUEST_URL}"
-          loginRequestBody: "${LOGIN_USERNAME_FIELD}={%username%}&${LOGIN_PASSWORD_FIELD}={%password%}"
+          loginRequestBody: '{"${LOGIN_USERNAME_FIELD}":"{%username%}","${LOGIN_PASSWORD_FIELD}":"{%password%}"}'
         verification:
-          method: "response"
+          method: "poll"
+          pollUrl: "${TARGET_URL}/dashboard"
+          pollFrequency: 60
+          pollUnits: "requests"
           loggedInRegex: "${LOGGED_IN_INDICATOR}"
           loggedOutRegex: "${LOGGED_OUT_INDICATOR}"
-      sessionManagement:
-        method: "cookie"
-      users:
-        - name: "zap-auth-user"
-          credentials:
-            username: "${ZAP_LOGIN_USERNAME}"
-            password: "${ZAP_LOGIN_PASSWORD}"
   parameters:
     failOnError: true
     failOnWarning: false
