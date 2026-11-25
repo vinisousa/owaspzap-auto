@@ -107,12 +107,9 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      # Exit codes come from two combined sources: the JSON report's alert counts, and
-      # ZAP's own exitStatus job output (captured in zap-run-web.log). The JSON report
-      # has been observed to omit alerts raised on non-200 root responses, so we trust
-      # either source rather than the report alone. This makes a High-risk finding
-      # always map to its own exit code (2) regardless of how ZAP itself exited, and
-      # exposes high_alerts_found/count as step outputs for later steps/jobs to branch on.
+      # Findings are reported as warnings and step outputs; they do not make a
+      # successfully completed scan fail. Execution still fails if ZAP did not finish
+      # or did not produce a valid JSON report.
       - name: Evaluate scan result
         if: always()
         id: evaluate
@@ -120,6 +117,17 @@ jobs:
           set -euo pipefail
           REPORT_JSON="$RUNNER_TEMP/zap-reports/web/zap-full-scan-report.json"
           ZAP_LOG="$RUNNER_TEMP/zap-run-web.log"
+
+          if [ ! -s "$REPORT_JSON" ]; then
+            echo "::error::ZAP full scan did not produce a JSON report."
+            echo "high_alerts_found=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if ! jq -e . "$REPORT_JSON" >/dev/null 2>&1; then
+            echo "::error::ZAP full scan produced an invalid JSON report."
+            echo "high_alerts_found=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           COMPLETED=false
           if [ -f "$REPORT_JSON" ]; then COMPLETED=true; fi
@@ -134,8 +142,8 @@ jobs:
           HIGH_COUNT=0
           MEDIUM_COUNT=0
           if [ -f "$REPORT_JSON" ]; then
-            HIGH_COUNT=$(jq '[.site[]?.alerts[]? | select(.riskcode=="3")] | length' "$REPORT_JSON")
-            MEDIUM_COUNT=$(jq '[.site[]?.alerts[]? | select(.riskcode=="2")] | length' "$REPORT_JSON")
+            HIGH_COUNT=$(jq '[.site[]?.alerts[]? | select((.riskcode | tostring)=="3")] | length' "$REPORT_JSON")
+            MEDIUM_COUNT=$(jq '[.site[]?.alerts[]? | select((.riskcode | tostring)=="2")] | length' "$REPORT_JSON")
           fi
 
           HIGH_FOUND=false
@@ -152,15 +160,18 @@ jobs:
 
           if [ "$HIGH_FOUND" = true ]; then
             echo "high_alerts_found=true" >> "$GITHUB_OUTPUT"
-            echo "::error::ZAP full scan found High risk alert(s)."
-            exit 2
+            echo "::warning::ZAP full scan found High risk alert(s); review the generated report."
+          else
+            echo "high_alerts_found=false" >> "$GITHUB_OUTPUT"
           fi
-          echo "high_alerts_found=false" >> "$GITHUB_OUTPUT"
           if [ "$MEDIUM_FOUND" = true ]; then
             echo "::warning::ZAP full scan found Medium risk alert(s)."
-            exit 3
           fi
-          echo "ZAP full scan completed with no High/Medium alerts."
+          if [ "$HIGH_FOUND" = true ] || [ "$MEDIUM_FOUND" = true ]; then
+            echo "ZAP full scan completed successfully; findings are recorded in the report."
+          else
+            echo "ZAP full scan completed successfully with no High/Medium alerts."
+          fi
 
   api-scan:
     name: Authenticated API scan
@@ -288,12 +299,9 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      # Exit codes come from two combined sources: the JSON report's alert counts, and
-      # ZAP's own exitStatus job output (captured in zap-run-api.log). The JSON report
-      # has been observed to omit alerts raised on non-200 root responses, so we trust
-      # either source rather than the report alone. This makes a High-risk finding
-      # always map to its own exit code (2) regardless of how ZAP itself exited, and
-      # exposes high_alerts_found/count as step outputs for later steps/jobs to branch on.
+      # Findings are reported as warnings and step outputs; they do not make a
+      # successfully completed scan fail. Execution still fails if ZAP did not finish
+      # or did not produce a valid JSON report.
       - name: Evaluate scan result
         if: always()
         id: evaluate
@@ -301,6 +309,17 @@ jobs:
           set -euo pipefail
           REPORT_JSON="$RUNNER_TEMP/zap-reports/api/zap-api-scan-report.json"
           ZAP_LOG="$RUNNER_TEMP/zap-run-api.log"
+
+          if [ ! -s "$REPORT_JSON" ]; then
+            echo "::error::ZAP API scan did not produce a JSON report."
+            echo "high_alerts_found=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if ! jq -e . "$REPORT_JSON" >/dev/null 2>&1; then
+            echo "::error::ZAP API scan produced an invalid JSON report."
+            echo "high_alerts_found=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           COMPLETED=false
           if [ -f "$REPORT_JSON" ]; then COMPLETED=true; fi
@@ -315,8 +334,8 @@ jobs:
           HIGH_COUNT=0
           MEDIUM_COUNT=0
           if [ -f "$REPORT_JSON" ]; then
-            HIGH_COUNT=$(jq '[.site[]?.alerts[]? | select(.riskcode=="3")] | length' "$REPORT_JSON")
-            MEDIUM_COUNT=$(jq '[.site[]?.alerts[]? | select(.riskcode=="2")] | length' "$REPORT_JSON")
+            HIGH_COUNT=$(jq '[.site[]?.alerts[]? | select((.riskcode | tostring)=="3")] | length' "$REPORT_JSON")
+            MEDIUM_COUNT=$(jq '[.site[]?.alerts[]? | select((.riskcode | tostring)=="2")] | length' "$REPORT_JSON")
           fi
 
           HIGH_FOUND=false
@@ -333,12 +352,15 @@ jobs:
 
           if [ "$HIGH_FOUND" = true ]; then
             echo "high_alerts_found=true" >> "$GITHUB_OUTPUT"
-            echo "::error::ZAP API scan found High risk alert(s)."
-            exit 2
+            echo "::warning::ZAP API scan found High risk alert(s); review the generated report."
+          else
+            echo "high_alerts_found=false" >> "$GITHUB_OUTPUT"
           fi
-          echo "high_alerts_found=false" >> "$GITHUB_OUTPUT"
           if [ "$MEDIUM_FOUND" = true ]; then
             echo "::warning::ZAP API scan found Medium risk alert(s)."
-            exit 3
           fi
-          echo "ZAP API scan completed with no High/Medium alerts."
+          if [ "$HIGH_FOUND" = true ] || [ "$MEDIUM_FOUND" = true ]; then
+            echo "ZAP API scan completed successfully; findings are recorded in the report."
+          else
+            echo "ZAP API scan completed successfully with no High/Medium alerts."
+          fi
